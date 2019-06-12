@@ -33,14 +33,18 @@ kubectl -n openshift-operator-lifecycle-manager get deployments
 kubectl create clusterrolebinding add-on-cluster-admin --clusterrole=cluster-admin --serviceaccount=kube-system:default
 ```
 
-## Run Web UI
+#### 2. Setup Admin Web UI & api
 
-```
-sed -i 's|latest|v3.11.0|g' ./operator-lifecycle-manager/scripts/run_console_local.sh
-./operator-lifecycle-manager/scripts/run_console_local.sh
+```sh
+export endpoint=$(kubectl config view -o json | jq '{myctx: .["current-context"], ctxs: .contexts[], clusters: .clusters[]}' | jq 'select(.myctx == .ctxs.name)' | jq 'select(.ctxs.context.cluster ==  .clusters.name)' | jq '.clusters.cluster.server' -r)
+sed -i 's|K8S_ENDPOINT|'"$endpoint"'|g' operator-lifecycle-manager/origin-console-deployment.yaml
+export secret_token=$(kubectl get secret "$(kubectl get serviceaccount default --namespace=kube-system -o jsonpath='{.secrets[0].name}')" --namespace=kube-system -o template --template='{{.data.token}}' | base64 --decode)
+sed -i 's|K8S_SECRET_TOKEN|'"$secret_token"'|g' operator-lifecycle-manager/origin-console-deployment.yaml
+kubectl create -f operator-lifecycle-manager/origin-console-deployment.yaml
 ```
 
-> Now, you can see Free5gcService under  http://hostname:9000/k8s/cluster/customresourcedefinitions and create your own Free5gc Services.
+
+> Now, you can see Free5gcService under  http://hostname:31900/k8s/cluster/customresourcedefinitions and create your own Free5gc Services.
 
 ## Todo
 1. Add ONOS operator (only call onos device or host)
