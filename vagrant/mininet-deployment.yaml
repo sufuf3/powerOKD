@@ -1,0 +1,36 @@
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: mininet
+  labels:
+    app: mininet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mininet
+  template:
+    metadata:
+      labels:
+        app: mininet
+      annotations:
+        cni: "calico,pon1"
+    spec:
+      containers:
+        - name: mininet
+          image: ciena/mininet:ubuntu-bionic
+          imagePullPolicy: IfNotPresent
+          #args: ["/toposcripts/topo.py"]
+          stdin: true
+          tty: true
+          securityContext:
+            privileged: true
+          #volumeMounts:
+          #- name: "topo-config"
+          #  mountPath: "/toposcripts"
+      #volumes:
+      #  - name: "topo-config"
+      #    configMap:
+      #      name: "{{ .Release.Name }}-configmap"
+      #      defaultMode: 0755
+    #  affinity:

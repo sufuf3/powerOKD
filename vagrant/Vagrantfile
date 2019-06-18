@@ -1,0 +1,225 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# All Vagrant configuration is done below. The "2" in Vagrant.configure
+# configures the configuration version (we support older styles for
+# backwards compatibility). Please don't change it unless you know what
+# you're doing.
+Vagrant.configure("2") do |config|
+  # The most common configuration options are documented and commented below.
+  # For a complete reference, please see the online documentation at
+  # https://docs.vagrantup.com.
+
+  # Every Vagrant development environment requires a box. You can search for
+  # boxes at https://vagrantcloud.com/search.
+  config.vm.box = "ubuntu/xenial64"
+  config.vm.hostname = "devlab"
+  config.vm.define vm_name = 'devlab'
+
+  lab_env = ENV.fetch('LAB', true)
+  ovs_env = ENV.fetch('OVS', false)
+  cni_env = ENV.fetch('CNI', true)
+
+$hands_on = <<SHELL
+set -e -x -u
+echo "=== Setup Environment ==="
+sudo apt-get update
+sudo apt-get install -y git nfs-common ntp jq bats httpie silversearcher-ag vim cmake tcpdump unzip tig socat traceroute
+sudo apt-get -y -qq install clang doxygen hugepages build-essential libnuma-dev libpcap-dev linux-headers-`uname -r` dh-autoreconf libssl-dev libcap-ng-dev openssl python python-pip htop bridge-utils
+cd ~/ && git clone https://github.com/sufuf3/hands-on-w-tutorials.git
+#sudo sysctl net.bridge.bridge-nf-call-iptables=1
+mkdir ~/labsetup/
+mv ~/kubernetes-dashboard.yaml ~/labsetup/
+mv ~/kubeadm.yaml ~/labsetup/
+mv ~/mininet-deployment.yaml ~/labsetup/
+
+# Install Docker
+# kubernetes official max validated version: 17.06.2~ce-0~ubuntu-xenial
+export DOCKER_VERSION="17.06.2~ce-0~ubuntu"
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+sudo apt-get update
+sudo apt-get install -y docker-ce=${DOCKER_VERSION}
+# Manage Docker as a non-root user
+sudo usermod -aG docker $USER
+
+# Install Kubernetes
+export KUBE_VERSION="1.13.7"
+export NET_IF_NAME="enp0s8"
+sudo apt-get install -y apt-transport-https curl
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee --append /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubectl kubelet=${KUBE_VERSION}-00 kubeadm=${KUBE_VERSION}-00
+# Disable swap
+sudo swapoff -a && sudo sysctl -w vm.swappiness=0
+sudo sed '/swap.img/d' -i /etc/fstab
+sudo kubeadm init --config ~/labsetup/kubeadm.yaml
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Should give flannel the real network interface name
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/bc79dd1505b0c8681ece4de4c0d86c5cd2643275/Documentation/kube-flannel.yml
+kubectl taint nodes --all node-role.kubernetes.io/master-
+
+# Install helm
+curl -L https://storage.googleapis.com/kubernetes-helm/helm-v2.9.1-linux-amd64.tar.gz > helm-v2.9.1-linux-amd64.tar.gz && tar -zxvf helm-v2.9.1-linux-amd64.tar.gz && chmod +x linux-amd64/helm && sudo mv linux-amd64/helm /usr/local/bin/helm
+rm -rf /home/$USER/helm-v2.9.1-linux-amd64.tar.gz
+sudo pip install yq
+helm init
+kubectl create serviceaccount --namespace kube-system tiller
+kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'
+
+
+# Install Kubernetes dashboard
+kubectl create -f ~/labsetup/kubernetes-dashboard.yaml
+kubectl -n kube-system create sa dashboard
+kubectl create clusterrolebinding dashboard --clusterrole cluster-admin --serviceaccount=kube-system:dashboard
+
+# Let anonymous access API server
+kubectl create clusterrolebinding anonymous-become-admin --clusterrole=cluster-admin --user=system:anonymous
+
+# Install Golang
+wget --quiet https://storage.googleapis.com/golang/go1.12.6.linux-amd64.tar.gz
+sudo tar -zxf go1.12.6.linux-amd64.tar.gz -C /usr/local/
+echo 'export GOROOT=/usr/local/go' >>  /home/$USER/.bashrc
+echo 'export GOPATH=$HOME/go' >> /home/$USER/.bashrc
+echo 'export PATH=/home/$USER/protoc/bin:$PATH:$GOROOT/bin:$GOPATH/bin' >> /home/$USER/.bashrc
+export GOROOT=/usr/local/go
+export GOPATH=$HOME/go
+export PATH=/home/$USER/protoc/bin:$PATH:$GOROOT/bin:$GOPATH/bin
+# setup golang dir
+mkdir -p /home/$USER/go/src
+rm -rf /home/$USER/go1.12.6.linux-amd64.tar.gz
+go get -u github.com/kardianos/govendor
+
+# operator-framework/operator-sdk Prerequisites
+curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
+
+# Deploy free5gc-operator
+cd ~/ && git clone https://github.com/sufuf3/free5gc-operator.git
+kubectl create -f ~/free5gc-operator/deploy/crds/free5gc_v1alpha1_free5gcservice_crd.yaml
+kubectl create -f ~/free5gc-operator/deploy/namespace.yaml
+kubectl create -f ~/free5gc-operator/deploy/service_account.yaml
+kubectl create -f ~/free5gc-operator/deploy/role.yaml
+kubectl create -f ~/free5gc-operator/deploy/role_binding.yaml
+kubectl create -f ~/free5gc-operator/deploy/operator.yaml
+
+# Deploy onosjob-operator
+cd ~/ && git clone https://github.com/sufuf3/onosjob-operator.git
+kubectl create -f ~/onosjob-operator/deploy/crds/onosjob_v1alpha1_onosjob_crd.yaml
+kubectl create -f ~/onosjob-operator/deploy/service_account.yaml
+kubectl create -f ~/onosjob-operator/deploy/role.yaml
+kubectl create -f ~/onosjob-operator/deploy/role_binding.yaml
+kubectl create -f ~/onosjob-operator/deploy/operator.yaml
+
+# Install ONOS
+helm repo add cord https://charts.opencord.org
+helm repo update
+helm install -n onos cord/onos
+sudo apt install -y mininet
+
+# Setup operator-lifecycle-manager
+cd ~/ && git clone https://github.com/sufuf3/operator-lifecycle-manager.git
+kubectl create -f ~/operator-lifecycle-manager/deploy/okd/manifests/0.7.2/0000_30_00-namespace.yaml
+kubectl get namespaces openshift-operator-lifecycle-manager
+kubectl create -f ~/operator-lifecycle-manager/deploy/okd/manifests/0.7.2/0000_30_01-olm-operator.serviceaccount.yaml
+kubectl -n openshift-operator-lifecycle-manager get serviceaccount olm-operator-serviceaccount
+kubectl get clusterrole system:controller:operator-lifecycle-manager
+kubectl get clusterrolebinding olm-operator-binding-openshift-operator-lifecycle-manager
+for num in {02..05}; do kubectl create -f ~/operator-lifecycle-manager/deploy/okd/manifests/0.7.2/0000_30_$num*; done
+kubectl get crds
+for num in {06,09}; do kubectl create -f ~/operator-lifecycle-manager/deploy/okd/manifests/0.7.2/0000_30_$num*; done
+kubectl -n openshift-operator-lifecycle-manager get catalogsource rh-operators
+kubectl -n openshift-operator-lifecycle-manager get configmap rh-operators
+for num in {10..13}; do kubectl create -f ~/operator-lifecycle-manager/deploy/okd/manifests/0.7.2/0000_30_$num*; done
+kubectl -n openshift-operator-lifecycle-manager get deployments
+kubectl create clusterrolebinding add-on-cluster-admin --clusterrole=cluster-admin --serviceaccount=kube-system:default
+
+
+export endpoint=$(kubectl config view -o json | jq '{myctx: .["current-context"], ctxs: .contexts[], clusters: .clusters[]}' | jq 'select(.myctx == .ctxs.name)' | jq 'select(.ctxs.context.cluster ==  .clusters.name)' | jq '.clusters.cluster.server' -r)
+sed -i 's|K8S_ENDPOINT|'"$endpoint"'|g' ~/operator-lifecycle-manager/origin-console-deployment.yaml
+export secret_token=$(kubectl get secret "$(kubectl get serviceaccount default --namespace=kube-system -o jsonpath='{.secrets[0].name}')" --namespace=kube-system -o template --template='{{.data.token}}' | base64 --decode)
+sed -i 's|K8S_SECRET_TOKEN|'"$secret_token"'|g' ~/operator-lifecycle-manager/origin-console-deployment.yaml
+kubectl create -f ~/operator-lifecycle-manager/origin-console-deployment.yaml
+SHELL
+
+$apt_openvswitch = <<SHELL
+set -e -x -u
+sudo apt-get update && sudo apt-get install -y openvswitch-switch
+SHELL
+
+$cni_hands_on = <<SHELL
+mkdir ~/cni-hands-on
+cd ~/cni-hands-on && curl -O -L https://github.com/containernetworking/cni/releases/download/v0.5.2/cni-amd64-v0.5.2.tgz
+tar -xzvf cni-amd64-v0.5.2.tgz
+SHELL
+
+  # In order to simulate multiple interfaces
+  # enp0s8
+  config.vm.network :private_network, ip: "172.17.8.100"
+  # enp0s9
+  config.vm.network :private_network, ip: "172.17.8.50"
+  # enp0s10
+  config.vm.network :private_network, ip: "172.17.8.60"
+  # enp0s16
+  config.vm.network :private_network, ip: "172.17.8.70"
+
+  # For K8s dashboard
+  config.vm.network "forwarded_port", guest: 32641, host: 32841
+  # For K8s API
+  config.vm.network "forwarded_port", guest: 6443, host: 8443
+  config.vm.network "forwarded_port", guest: 30120, host: 30120
+  config.vm.network "forwarded_port", guest: 31900, host: 31900
+  config.vm.network "forwarded_port", guest: 30120, host: 30120
+
+  if lab_env == true
+     config.vm.provision "file", source: "kubeadm.yaml", destination: "$HOME/kubeadm.yaml"
+     config.vm.provision "file", source: "kubernetes-dashboard.yaml", destination: "$HOME/kubernetes-dashboard.yaml"
+     config.vm.provision "file", source: "mininet-deployment.yaml", destination: "$HOME/mininet-deployment.yaml"
+     config.vm.provision "shell", privileged: false, inline: $hands_on
+  end
+  if ovs_env == true
+     config.vm.provision "shell", privileged: false, inline: $apt_openvswitch
+  end
+  if cni_env == true
+     config.vm.provision "shell", privileged: false, inline: $cni_hands_on
+  end
+
+  # Create a public network, which generally matched to bridged network.
+  # Bridged networks make the machine appear as another physical device on
+  # your network.
+  # config.vm.network "public_network"
+
+  # Share an additional folder to the guest VM. The first argument is
+  # the path on the host to the actual folder. The second argument is
+  # the path on the guest to mount the folder. And the optional third
+  # argument is a set of non-required options.
+  # config.vm.synced_folder "../data", "/vagrant_data"
+
+  # Provider-specific configuration so you can fine-tune various
+  # backing providers for Vagrant. These expose provider-specific options.
+  # Example for VirtualBox:
+  #
+   config.vm.provider "virtualbox" do |v|
+     # Display the VirtualBox GUI when booting the machine
+      v.customize ["modifyvm", :id, "--cpus", 2]
+      v.customize ["modifyvm", :id, "--memory", 4096]
+      v.customize ['modifyvm', :id, '--nicpromisc2', 'allow-all']
+      v.customize ["setextradata", :id, "VBoxInternal/CPUM/SSE4.1", "1"]
+      v.customize ["setextradata", :id, "VBoxInternal/CPUM/SSE4.2", "1"]
+   end
+  #
+  # View the documentation for the provider you are using for more
+  # information on available options.
+
+  # Enable provisioning with a shell script. Additional provisioners such as
+  # Puppet, Chef, Ansible, Salt, and Docker are also available. Please see the
+  # documentation for more information about their specific syntax and use.
+  # config.vm.provision "shell", inline: <<-SHELL
+  #   apt-get update
+  #   apt-get install -y apache2
+  # SHELL
+end
