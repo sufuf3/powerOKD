@@ -46,6 +46,51 @@ kubectl create -f operator-lifecycle-manager/origin-console-deployment.yaml
 
 > Now, you can see Free5gcService under  http://hostname:31900/k8s/cluster/customresourcedefinitions and create your own Free5gc Services.
 
-## Todo
-1. Add ONOS operator (only call onos device or host)
-2. Add ONOS Web UI
+#### 3. API Usage
+
+URL 是 `http://Node-ip:Node-Port/api/kubernetes/oapi/v1`, eg `http://Node-IP:31900/api/kubernetes/oapi/v1`    
+直接使用 Web UI 也可以直接 access `http://Node-ip:Node-Port/api/kubernetes/oapi/v1`   
+
+若用 K8s 內網  
+```
+$ kubectl get svc -n kube-system
+NAME                   TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                         AGE
+kube-dns               ClusterIP   10.96.0.10      <none>        53/UDP,53/TCP                   40h
+kubernetes-dashboard   NodePort    10.102.56.25    <none>        443:32641/TCP                   40h
+origin-dashboard       NodePort    10.105.37.175   <none>        9000:31900/TCP,8443:31844/TCP   21s
+tiller-deploy          ClusterIP   10.99.218.206   <none>        44134/TCP                       40h
+```
+
+URL 是 `http://10.105.37.175:9000/api/kubernetes/oapi/v1`  
+其他 API 的使用，請參閱 https://docs.okd.io/latest/rest_api/index.html  
+請切記 文件中的 `https://openshift.redhat.com:8443` 都要換成 `http://10.105.37.175:9000/api/kubernetes` 即可  
+  
+使用 Service Account Tokens 的方法  
+
+```sh
+$ export secret_token=$(kubectl get secret "$(kubectl get serviceaccount default --namespace=kube-system -o jsonpath='{.secrets[0].name}')" --namespace=kube-system -o template --template='{{.data.token}}' | base64 --decode)
+$ curl -X GET -H "Authorization: Bearer $secret_token" http://10.105.37.175:9000/api/kubernetes/oapi/v1 --insecure
+{
+  "paths": [
+    "/apis",
+    "/apis/",
+    "/apis/apiextensions.k8s.io",
+    "/apis/apiextensions.k8s.io/v1beta1",
+    "/healthz",
+    "/healthz/etcd",
+    "/healthz/log",
+    "/healthz/ping",
+    "/healthz/poststarthook/generic-apiserver-start-informers",
+    "/healthz/poststarthook/start-apiextensions-controllers",
+    "/healthz/poststarthook/start-apiextensions-informers",
+    "/metrics",
+    "/openapi/v2",
+    "/swagger-2.0.0.json",
+    "/swagger-2.0.0.pb-v1",
+    "/swagger-2.0.0.pb-v1.gz",
+    "/swagger.json",
+    "/swaggerapi",
+    "/version"
+  ]
+}
+```
